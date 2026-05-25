@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 COPY Cargo.toml ./
 COPY src ./src
 
-RUN cargo build --release
+RUN cargo build --release --jobs 2
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim
