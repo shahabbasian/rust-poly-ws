@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymarket-fetcher
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+      - DATABASE_URL=${DATABASE_URL}
+      - SYMBOL_FILTER=${SYMBOL_FILTER:-}
+    networks:
+      - default
+      - supabase-net
+
+networks:
+  supabase-net:
+    external: true
+    name: btlyefmo9beepazzx2jt10dz
