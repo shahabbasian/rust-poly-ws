@@ -112,8 +112,8 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
     };
 
     let subscribe_json = serde_json::to_string(&subscribe_msg)?;
-    write.send(Message::Text(subscribe_json.into())).await?;
     info!("Sent subscribe message: {}", subscribe_json);
+    write.send(Message::Text(subscribe_json.into())).await?;
 
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
 
