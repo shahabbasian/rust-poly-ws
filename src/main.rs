@@ -115,7 +115,8 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if text.trim() == "PONG" {
+                        let text = text.trim();
+                        if text.is_empty() || text == "PONG" {
                             continue;
                         }
                         if let Err(e) = handle_message(text, pool).await {
@@ -142,8 +143,8 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
     Ok(())
 }
 
-async fn handle_message(text: String, pool: &PgPool) -> anyhow::Result<()> {
-    let ws_msg: WsMessage = serde_json::from_str(&text)?;
+async fn handle_message(text: &str, pool: &PgPool) -> anyhow::Result<()> {
+    let ws_msg: WsMessage = serde_json::from_str(text)?;
 
     if ws_msg.topic != "crypto_prices_chainlink" {
         return Ok(());
