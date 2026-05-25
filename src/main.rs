@@ -82,22 +82,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn make_subscriptions(symbol_filter: Option<&str>) -> Vec<Subscription> {
-    if let Some(filter) = symbol_filter {
-        return vec![Subscription {
-            topic: "crypto_prices_chainlink".to_string(),
-            message_type: "*".to_string(),
-            filters: Some(serde_json::json!({"symbol": filter}).to_string()),
-        }];
-    }
-
-    ["btc/usd", "eth/usd", "sol/usd", "xrp/usd"]
-        .iter()
-        .map(|s| Subscription {
-            topic: "crypto_prices_chainlink".to_string(),
-            message_type: "*".to_string(),
-            filters: Some(serde_json::json!({"symbol": s}).to_string()),
-        })
-        .collect()
+    vec![Subscription {
+        topic: "crypto_prices_chainlink".to_string(),
+        message_type: "*".to_string(),
+        filters: symbol_filter.map(|s| serde_json::json!({"symbol": s}).to_string()),
+    }]
 }
 
 async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyhow::Result<()> {
