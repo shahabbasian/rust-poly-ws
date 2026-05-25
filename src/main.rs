@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const WS_URL: &str = "wss://ws-live-data.polymarket.com";
 const PING_INTERVAL_SECS: u64 = 5;
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Connected to Postgres");
 
-    let symbol_filter = env::var("SYMBOL_FILTER").ok();
+    let symbol_filter = env::var("SYMBOL_FILTER").ok().filter(|s| !s.is_empty());
 
     let mut attempt = 0u32;
     loop {
@@ -82,28 +82,39 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn make_subscriptions(symbol_filter: Option<&str>) -> Vec<Subscription> {
+    if let Some(filter) = symbol_filter {
+        return vec![Subscription {
+            topic: "crypto_prices_chainlink".to_string(),
+            message_type: "*".to_string(),
+            filters: Some(serde_json::json!({"symbol": filter}).to_string()),
+        }];
+    }
+
+    ["btc/usd", "eth/usd", "sol/usd", "xrp/usd"]
+        .iter()
+        .map(|s| Subscription {
+            topic: "crypto_prices_chainlink".to_string(),
+            message_type: "*".to_string(),
+            filters: Some(serde_json::json!({"symbol": s}).to_string()),
+        })
+        .collect()
+}
+
 async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyhow::Result<()> {
     let (ws_stream, _) = connect_async(WS_URL).await?;
     info!("Connected to {}", WS_URL);
 
     let (mut write, mut read) = ws_stream.split();
 
-    let filters = symbol_filter.map(|s| {
-        serde_json::json!({"symbol": s }).to_string()
-    });
-
     let subscribe_msg = SubscribeRequest {
         action: "subscribe".to_string(),
-        subscriptions: vec![Subscription {
-            topic: "crypto_prices_chainlink".to_string(),
-            message_type: "*".to_string(),
-            filters,
-        }],
+        subscriptions: make_subscriptions(symbol_filter),
     };
 
     let subscribe_json = serde_json::to_string(&subscribe_msg)?;
     write.send(Message::Text(subscribe_json.into())).await?;
-    info!("Sent subscribe message");
+    info!("Sent subscribe message: {}", subscribe_json);
 
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
 
@@ -119,6 +130,7 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
                         if text.is_empty() || text == "PONG" {
                             continue;
                         }
+                        trace!("WS raw: {}", text);
                         if let Err(e) = handle_message(text, pool).await {
                             warn!("Failed to handle message: {:?}", e);
                         }
@@ -147,10 +159,12 @@ async fn handle_message(text: &str, pool: &PgPool) -> anyhow::Result<()> {
     let ws_msg: WsMessage = serde_json::from_str(text)?;
 
     if ws_msg.topic != "crypto_prices_chainlink" {
+        debug!("Skipping topic: {}", ws_msg.topic);
         return Ok(());
     }
 
     if ws_msg.message_type != "update" {
+        debug!("Skipping type: {}", ws_msg.message_type);
         return Ok(());
     }
 
