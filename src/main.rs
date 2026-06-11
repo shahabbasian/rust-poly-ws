@@ -78,9 +78,9 @@ async fn main() -> anyhow::Result<()> {
     info!("Connected to Postgres");
 
     let symbol_filter = env::var("SYMBOL_FILTER").ok().filter(|s| !s.is_empty());
-    let symbols: Vec<&'static str> = match symbol_filter.as_deref() {
+    let symbols: Vec<String> = match symbol_filter {
         Some(s) => vec![s],
-        None => DEFAULT_SYMBOLS.to_vec(),
+        None => DEFAULT_SYMBOLS.iter().map(|&s| s.to_string()).collect(),
     };
 
     let mut handles = vec![];
@@ -89,18 +89,18 @@ async fn main() -> anyhow::Result<()> {
         let handle = tokio::spawn(async move {
             let mut attempt = 0u32;
             loop {
-                match connect_and_listen_symbol(&pool, symbol).await {
+                match connect_and_listen_symbol(&pool, &symbol).await {
                     Ok(()) => {
-                        info!(symbol, "WebSocket closed gracefully. Reconnecting...");
+                        info!(symbol = symbol.as_str(), "WebSocket closed gracefully. Reconnecting...");
                     }
                     Err(e) => {
-                        error!(symbol, error = ?e, "WebSocket error. Reconnecting...");
+                        error!(symbol = symbol.as_str(), error = ?e, "WebSocket error. Reconnecting...");
                     }
                 }
 
                 attempt += 1;
                 if attempt >= MAX_RECONNECT_ATTEMPTS {
-                    error!(symbol, "Max reconnect attempts reached. Exiting.");
+                    error!(symbol = symbol.as_str(), "Max reconnect attempts reached. Exiting.");
                     break;
                 }
                 sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
