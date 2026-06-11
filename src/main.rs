@@ -24,8 +24,7 @@ struct Subscription {
     topic: String,
     #[serde(rename = "type")]
     message_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    filters: Option<String>,
+    filters: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,10 +81,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn make_subscriptions(symbol_filter: Option<&str>) -> Vec<Subscription> {
+    let filters = match symbol_filter {
+        Some(s) => serde_json::json!({"symbol": s}).to_string(),
+        None => "".to_string(),
+    };
     vec![Subscription {
         topic: "crypto_prices_chainlink".to_string(),
         message_type: "*".to_string(),
-        filters: symbol_filter.map(|s| serde_json::json!({"symbol": s}).to_string()),
+        filters,
     }]
 }
 
