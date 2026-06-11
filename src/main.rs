@@ -78,57 +78,61 @@ async fn main() -> anyhow::Result<()> {
     info!("Connected to Postgres");
 
     let symbol_filter = env::var("SYMBOL_FILTER").ok().filter(|s| !s.is_empty());
+    let symbols: Vec<&'static str> = match symbol_filter.as_deref() {
+        Some(s) => vec![s],
+        None => DEFAULT_SYMBOLS.to_vec(),
+    };
 
-    let mut attempt = 0u32;
-    loop {
-        match connect_and_listen(&pool, symbol_filter.as_deref()).await {
-            Ok(()) => {
-                info!("WebSocket connection closed gracefully. Reconnecting...");
-            }
-            Err(e) => {
-                error!("WebSocket error: {:?}. Reconnecting...", e);
-            }
-        }
+    let mut handles = vec![];
+    for symbol in symbols {
+        let pool = pool.clone();
+        let handle = tokio::spawn(async move {
+            let mut attempt = 0u32;
+            loop {
+                match connect_and_listen_symbol(&pool, symbol).await {
+                    Ok(()) => {
+                        info!(symbol, "WebSocket closed gracefully. Reconnecting...");
+                    }
+                    Err(e) => {
+                        error!(symbol, error = ?e, "WebSocket error. Reconnecting...");
+                    }
+                }
 
-        attempt += 1;
-        if attempt >= MAX_RECONNECT_ATTEMPTS {
-            error!("Max reconnect attempts reached. Exiting.");
-            break;
-        }
-        sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+                attempt += 1;
+                if attempt >= MAX_RECONNECT_ATTEMPTS {
+                    error!(symbol, "Max reconnect attempts reached. Exiting.");
+                    break;
+                }
+                sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.await;
     }
 
     Ok(())
 }
 
-fn make_subscriptions(symbol_filter: Option<&str>) -> Vec<Subscription> {
-    let symbols: Vec<&str> = match symbol_filter {
-        Some(s) => vec![s],
-        None => DEFAULT_SYMBOLS.to_vec(),
-    };
-    symbols
-        .into_iter()
-        .map(|symbol| Subscription {
-            topic: "crypto_prices_chainlink".to_string(),
-            message_type: "*".to_string(),
-            filters: serde_json::json!({"symbol": symbol}).to_string(),
-        })
-        .collect()
-}
-
-async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyhow::Result<()> {
+async fn connect_and_listen_symbol(pool: &PgPool, symbol: &str) -> anyhow::Result<()> {
     let (ws_stream, _) = connect_async(WS_URL).await?;
-    info!("Connected to {}", WS_URL);
+    info!(symbol, "Connected to {}", WS_URL);
 
     let (mut write, mut read) = ws_stream.split();
 
     let subscribe_msg = SubscribeRequest {
         action: "subscribe".to_string(),
-        subscriptions: make_subscriptions(symbol_filter),
+        subscriptions: vec![Subscription {
+            topic: "crypto_prices_chainlink".to_string(),
+            message_type: "*".to_string(),
+            filters: serde_json::json!({"symbol": symbol}).to_string(),
+        }],
     };
 
     let subscribe_json = serde_json::to_string(&subscribe_msg)?;
-    info!("Sent subscribe message: {}", subscribe_json);
+    info!(symbol, "Sent subscribe message: {}", subscribe_json);
     write.send(Message::Text(subscribe_json.into())).await?;
 
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -145,20 +149,20 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
                         if text.is_empty() || text == "PONG" {
                             continue;
                         }
-                        trace!("WS raw: {}", text);
+                        trace!(symbol, "WS raw: {}", text);
                         if let Err(e) = handle_message(text, pool).await {
-                            warn!("Failed to handle message: {:?}", e);
+                            warn!(symbol, "Failed to handle message: {:?}", e);
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!("WebSocket closed by server");
+                        info!(symbol, "WebSocket closed by server");
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         write.send(Message::Pong(data)).await?;
                     }
                     Some(Err(e)) => {
-                        error!("WebSocket read error: {:?}", e);
+                        error!(symbol, "WebSocket read error: {:?}", e);
                         break;
                     }
                     _ => {}
