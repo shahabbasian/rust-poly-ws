@@ -31,14 +31,14 @@ async fn main() -> anyhow::Result<()> {
     // ── Spawn batch writer ──
     let pool_clone = pool.clone();
     let batch_config = cfg.batch.clone();
-    let batch_handle = tokio::spawn(async move {
+    let mut batch_handle = tokio::spawn(async move {
         db::start_batch_writer(pool_clone, batch_config, batch_rx).await;
     });
 
     // ── Spawn WebSocket reader ──
     let ws_cfg = cfg.clone();
     let ws_batch_tx = batch_tx.clone();
-    let ws_handle = tokio::spawn(async move {
+    let mut ws_handle = tokio::spawn(async move {
         ws::run(&ws_cfg, ws_batch_tx).await;
     });
 
