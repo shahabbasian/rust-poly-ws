@@ -47,10 +47,10 @@ async fn main() -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT/SIGTERM, initiating graceful shutdown");
         }
-        _ = ws_handle => {
+        _ = &mut ws_handle => {
             error!("WebSocket task exited unexpectedly");
         }
-        _ = batch_handle => {
+        _ = &mut batch_handle => {
             error!("Batch writer exited unexpectedly");
         }
     }

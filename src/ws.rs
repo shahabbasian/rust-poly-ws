@@ -57,7 +57,7 @@ pub async fn run(config: &AppConfig, batch_tx: mpsc::Sender<PriceRow>) {
 fn compute_backoff(config: &AppConfig, attempt: u32) -> Duration {
     let base = config.reconnect.initial_backoff_secs;
     let max = config.reconnect.max_backoff_secs;
-    let exp = base.saturating_mul(1_u64.saturating_shl(attempt.saturating_sub(1)));
+    let exp = base.saturating_mul(2_u64.saturating_pow(attempt.saturating_sub(1)));
     let capped = exp.min(max);
     let jitter_ms = if config.reconnect.jitter_millis > 0 {
         fastrand::u64(..config.reconnect.jitter_millis)
