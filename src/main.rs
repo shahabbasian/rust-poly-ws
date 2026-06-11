@@ -12,6 +12,15 @@ const WS_URL: &str = "wss://ws-live-data.polymarket.com";
 const PING_INTERVAL_SECS: u64 = 5;
 const RECONNECT_DELAY_SECS: u64 = 5;
 const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+const DEFAULT_SYMBOLS: &[&str] = &[
+    "btc/usd",
+    "eth/usd",
+    "sol/usd",
+    "xrp/usd",
+    "hype/usd",
+    "doge/usd",
+    "bnb/usd",
+];
 
 #[derive(Debug, Serialize)]
 struct SubscribeRequest {
@@ -39,6 +48,18 @@ struct WsMessage {
 #[derive(Debug, Deserialize)]
 struct PricePayload {
     symbol: String,
+    timestamp: i64,
+    value: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotPayload {
+    symbol: String,
+    data: Vec<DataPoint>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DataPoint {
     timestamp: i64,
     value: f64,
 }
@@ -81,15 +102,18 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn make_subscriptions(symbol_filter: Option<&str>) -> Vec<Subscription> {
-    let filters = match symbol_filter {
-        Some(s) => serde_json::json!({"symbol": s}).to_string(),
-        None => "".to_string(),
+    let symbols: Vec<&str> = match symbol_filter {
+        Some(s) => vec![s],
+        None => DEFAULT_SYMBOLS.to_vec(),
     };
-    vec![Subscription {
-        topic: "crypto_prices_chainlink".to_string(),
-        message_type: "*".to_string(),
-        filters,
-    }]
+    symbols
+        .into_iter()
+        .map(|symbol| Subscription {
+            topic: "crypto_prices_chainlink".to_string(),
+            message_type: "*".to_string(),
+            filters: serde_json::json!({"symbol": symbol}).to_string(),
+        })
+        .collect()
 }
 
 async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyhow::Result<()> {
@@ -149,41 +173,52 @@ async fn connect_and_listen(pool: &PgPool, symbol_filter: Option<&str>) -> anyho
 async fn handle_message(text: &str, pool: &PgPool) -> anyhow::Result<()> {
     let ws_msg: WsMessage = serde_json::from_str(text)?;
 
-    if ws_msg.topic != "crypto_prices_chainlink" {
-        debug!("Skipping topic: {}", ws_msg.topic);
-        return Ok(());
-    }
-
-    if ws_msg.message_type != "update" {
-        debug!("Skipping type: {}", ws_msg.message_type);
-        return Ok(());
-    }
-
     let payload_value = match ws_msg.payload {
         Some(v) => v,
         None => return Ok(()),
     };
 
-    let payload: PricePayload = serde_json::from_value(payload_value)?;
+    match (ws_msg.topic.as_str(), ws_msg.message_type.as_str()) {
+        // Snapshot message (initial historical data)
+        ("crypto_prices", "subscribe") => {
+            let snapshot: SnapshotPayload = serde_json::from_value(payload_value)?;
+            let mut inserted = 0usize;
+            for point in snapshot.data {
+                insert_price(pool, &snapshot.symbol, point.value, point.timestamp).await?;
+                inserted += 1;
+            }
+            info!(symbol = snapshot.symbol, count = inserted, "Inserted snapshot");
+        }
+        // Real-time update message
+        ("crypto_prices_chainlink", "update") => {
+            let payload: PricePayload = serde_json::from_value(payload_value)?;
+            insert_price(pool, &payload.symbol, payload.value, payload.timestamp).await?;
+            info!(
+                symbol = payload.symbol,
+                price = payload.value,
+                timestamp = payload.timestamp,
+                "Inserted price"
+            );
+        }
+        _ => {
+            debug!("Skipping topic={} type={}", ws_msg.topic, ws_msg.message_type);
+        }
+    }
 
+    Ok(())
+}
+
+async fn insert_price(pool: &PgPool, symbol: &str, value: f64, timestamp: i64) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO chainlink_prices (symbol, price, timestamp)
         VALUES ($1, $2, $3)
         "#,
     )
-    .bind(&payload.symbol)
-    .bind(payload.value)
-    .bind(payload.timestamp)
+    .bind(symbol)
+    .bind(value)
+    .bind(timestamp)
     .execute(pool)
     .await?;
-
-    info!(
-        symbol = payload.symbol,
-        price = payload.value,
-        timestamp = payload.timestamp,
-        "Inserted price"
-    );
-
     Ok(())
 }
