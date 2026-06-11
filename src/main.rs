@@ -1,6 +1,7 @@
 use sqlx::PgPool;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tracing::{error, info};
 
 mod config;
@@ -35,20 +36,24 @@ async fn main() -> anyhow::Result<()> {
         db::start_batch_writer(pool_clone, batch_config, batch_rx).await;
     });
 
-    // ── Spawn WebSocket reader ──
-    let ws_cfg = cfg.clone();
-    let ws_batch_tx = batch_tx.clone();
-    let mut ws_handle = tokio::spawn(async move {
-        ws::run(&ws_cfg, ws_batch_tx).await;
-    });
+    // ── Spawn one WebSocket task per symbol ──
+    let mut ws_handles = JoinSet::new();
+    for symbol in &cfg.symbols {
+        let ws_cfg = cfg.clone();
+        let ws_batch_tx = batch_tx.clone();
+        let symbol = symbol.clone();
+        ws_handles.spawn(async move {
+            ws::run_symbol(&ws_cfg, &symbol, ws_batch_tx).await;
+        });
+    }
 
     // ── Graceful shutdown ──
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT/SIGTERM, initiating graceful shutdown");
         }
-        _ = &mut ws_handle => {
-            error!("WebSocket task exited unexpectedly");
+        _ = ws_handles.join_next() => {
+            error!("A WebSocket task exited unexpectedly");
         }
         _ = &mut batch_handle => {
             error!("Batch writer exited unexpectedly");
@@ -56,6 +61,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Cleanup ──
+    // Abort remaining WS tasks (they'll close their connections)
+    ws_handles.abort_all();
+
     // Close the batch channel so writer can flush remaining rows
     drop(batch_tx);
 

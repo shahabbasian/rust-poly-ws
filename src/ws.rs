@@ -9,25 +9,27 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, error, info, trace, warn};
 
-pub async fn run(config: &AppConfig, batch_tx: mpsc::Sender<PriceRow>) {
+/// Spawn one WebSocket connection per symbol. Each connection has its own
+/// reconnect loop and sends rows into the shared batch channel.
+pub async fn run_symbol(config: &AppConfig, symbol: &str, batch_tx: mpsc::Sender<PriceRow>) {
     let mut attempt = 0u32;
     let mut last_connected: Option<Instant> = None;
 
     loop {
-        match connect_and_listen(config, &batch_tx).await {
+        match connect_and_listen(config, symbol, &batch_tx).await {
             Ok(()) => {
                 last_connected = Some(Instant::now());
-                info!("WebSocket closed gracefully. Reconnecting...");
+                info!(symbol, "WebSocket closed gracefully. Reconnecting...");
             }
             Err(e) => {
-                error!(error = ?e, "WebSocket error. Reconnecting...");
+                error!(symbol, error = ?e, "WebSocket error. Reconnecting...");
             }
         }
 
-        // If we had a stable connection for > reset_after, reset the attempt counter
         if let Some(t) = last_connected {
             if t.elapsed().as_secs() >= config.reconnect.reset_after_secs {
                 info!(
+                    symbol,
                     "Stable connection lasted >{}s, resetting backoff",
                     config.reconnect.reset_after_secs
                 );
@@ -38,6 +40,7 @@ pub async fn run(config: &AppConfig, batch_tx: mpsc::Sender<PriceRow>) {
         attempt += 1;
         if attempt >= config.reconnect.max_attempts {
             error!(
+                symbol,
                 max_attempts = config.reconnect.max_attempts,
                 "Max reconnect attempts reached. Exiting WebSocket loop."
             );
@@ -46,6 +49,7 @@ pub async fn run(config: &AppConfig, batch_tx: mpsc::Sender<PriceRow>) {
 
         let delay = compute_backoff(config, attempt);
         info!(
+            symbol,
             attempt,
             delay_secs = delay.as_secs(),
             "Waiting before reconnect"
@@ -69,32 +73,29 @@ fn compute_backoff(config: &AppConfig, attempt: u32) -> Duration {
 
 async fn connect_and_listen(
     config: &AppConfig,
+    symbol: &str,
     batch_tx: &mpsc::Sender<PriceRow>,
 ) -> anyhow::Result<()> {
     let (ws_stream, _) = connect_async(&config.ws_url).await?;
-    info!(url = %config.ws_url, "WebSocket connected");
+    info!(symbol, url = %config.ws_url, "WebSocket connected");
 
     let (mut write, mut read) = ws_stream.split();
 
-    // ── Subscribe ALL symbols in ONE message ──
+    // ── Subscribe ONE symbol per connection ──
     let subscribe_msg = SubscribeRequest {
         action: "subscribe".to_string(),
-        subscriptions: config
-            .symbols
-            .iter()
-            .map(|symbol| Subscription {
-                topic: "crypto_prices_chainlink".to_string(),
-                message_type: "*".to_string(),
-                filters: serde_json::json!({ "symbol": symbol }).to_string(),
-            })
-            .collect(),
+        subscriptions: vec![Subscription {
+            topic: "crypto_prices_chainlink".to_string(),
+            message_type: "*".to_string(),
+            filters: serde_json::json!({ "symbol": symbol }).to_string(),
+        }],
     };
 
     let subscribe_json = serde_json::to_string(&subscribe_msg)?;
     write
         .send(Message::Text(subscribe_json.clone().into()))
         .await?;
-    info!("Sent subscribe for {} symbols", config.symbols.len());
+    info!(symbol, "Sent subscribe message: {}", subscribe_json);
 
     let mut ping_interval = interval(Duration::from_secs(config.ping_interval_secs));
 
@@ -111,20 +112,20 @@ async fn connect_and_listen(
                         if text.is_empty() || text == "PONG" {
                             continue;
                         }
-                        trace!("WS raw: {}", text);
+                        trace!(symbol, "WS raw: {}", text);
                         if let Err(e) = handle_message(text, batch_tx).await {
-                            warn!("Failed to handle message: {:?}", e);
+                            warn!(symbol, "Failed to handle message: {:?}", e);
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!("WebSocket closed by server");
+                        info!(symbol, "WebSocket closed by server");
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         write.send(Message::Pong(data)).await?;
                     }
                     Some(Err(e)) => {
-                        error!("WebSocket read error: {:?}", e);
+                        error!(symbol, "WebSocket read error: {:?}", e);
                         break;
                     }
                     _ => {}
