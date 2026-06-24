@@ -16,4 +16,4 @@ services:
 networks:
   supabase-net:
     external: true
-    name: btlyefmo9beepazzx2jt10dz
+    name: o133ri1l09qimf5r8ju8tw1f
